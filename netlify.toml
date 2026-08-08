@@ -2,5 +2,8 @@
   command = "true"
   publish = "public"
 
+[functions]
+  directory = "netlify/functions"
+
 [images]
   remote_images = ["https://cherry-lane2-beta.netlify.app/.*", "https://incredible-cobbler-ff0c1a.netlify.app/.*"]

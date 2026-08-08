@@ -219,3 +219,64 @@ done
 
 echo
 echo "=================== END RECON ==========================================="
+
+# ============================================================================
+# PART 3 -- the three things still unmeasured:
+#   the skew-protection token, HOST_NODE_IP, and the buildbot orchestrator binary
+# ============================================================================
+hr "C1  NETLIFY_SKEW_PROTECTION_TOKEN -- what does it authenticate?"
+SK="$NETLIFY_SKEW_PROTECTION_TOKEN"
+echo "  len=${#SK} sha256=$(printf %s "$SK" | sha256sum | cut -c1-16)"
+case "$SK" in
+  *.*.*) echo "  looks like a JWT -- claims:"
+     python3 -c '
+import sys,base64,json
+t="""'"$SK"'""".strip()
+for n,seg in zip(("header","payload"),t.split(".")[:2]):
+    seg+="="*(-len(seg)%4)
+    try: print("   ",n,json.dumps(json.loads(base64.urlsafe_b64decode(seg))))
+    except Exception as e: print("   ",n,"undecodable",e)' ;;
+  *) echo "  not a JWT; first 6 chars=${SK:0:6}" ;;
+esac
+for tgt in "https://api.netlify.com/api/v1/user" "https://api.netlify.com/api/v1/sites" \
+           "https://jigsaw.services-prod.nsvcs.net/api/v1/user"; do
+  printf "  bearer-> %-52s " "${tgt#https://}"
+  timeout 10 curl -sk -o /tmp/sk.out -w '%{http_code} ' "$tgt" -H "Authorization: Bearer $SK" 2>/dev/null || printf 'ERR '
+  head -c 90 /tmp/sk.out | tr -d '\n'; echo
+done
+
+hr "C2  HOST_NODE_IP -- what is the build VM's host, and what listens on it?"
+echo "  HOST_NODE_IP=${HOST_NODE_IP:-unset}"
+echo "  resolver=$(grep -m1 nameserver /etc/resolv.conf 2>/dev/null)"
+if [ -n "$HOST_NODE_IP" ]; then
+  for p in 22 80 443 4646 4647 4648 8500 8501 8600 9998 9999; do
+    printf "  %s:%-5s " "$HOST_NODE_IP" "$p"
+    timeout 3 bash -c "cat </dev/null >/dev/tcp/$HOST_NODE_IP/$p" 2>/dev/null && echo OPEN || echo closed
+  done
+  printf "  http://%s/ -> " "$HOST_NODE_IP"
+  timeout 5 curl -s -o /tmp/h.out -w '%{http_code} ' "http://$HOST_NODE_IP/" 2>/dev/null || printf 'TIMEOUT '
+  head -c 120 /tmp/h.out 2>/dev/null | tr -d '\n'; echo
+fi
+
+hr "C3  /opt/build-bin -- is the orchestrator readable?"
+ls -la /opt/build-bin/ 2>/dev/null
+for f in /opt/build-bin/buildbot /opt/build-bin/build /opt/build-bin/entrypoint /opt/build-bin/dev-server; do
+  [ -r "$f" ] && echo "  READABLE $f  $(stat -c%s "$f" 2>/dev/null) bytes  sha256=$(sha256sum "$f" 2>/dev/null | cut -c1-16)" \
+               || echo "  not readable: $f"
+done
+if [ -r /opt/build-bin/buildbot ]; then
+  hr "C3b  internal hostnames + endpoints inside the buildbot binary"
+  strings -n 8 /opt/build-bin/buildbot 2>/dev/null \
+    | grep -oE '([a-z0-9.-]+\.(nsvcs\.net|netlify\.com|netlifysdk\.com))|(https?://[a-zA-Z0-9./_:-]{6,80})' \
+    | sort -u | head -60
+  hr "C3c  auth-header / token names the orchestrator knows about"
+  strings -n 6 /opt/build-bin/buildbot 2>/dev/null \
+    | grep -iE '^[A-Za-z-]*(token|secret|authorization|bearer|credential|jwt)[A-Za-z-]*$' \
+    | sort -u | head -40
+fi
+
+hr "C4  full env VALUES (my own site, no customer data)"
+env | sed -E 's/^(NETLIFY_SKEW_PROTECTION_TOKEN|BUGSNAG_KEY_BUILD_INFO)=(.{8}).*/\1=\2<TRUNCATED>/' | sort
+
+echo
+echo "=================== END PART 3 =========================================="

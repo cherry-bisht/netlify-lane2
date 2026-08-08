@@ -1,6 +1,3 @@
 [build]
-  command = "mkdir -p public; cp /tmp/plugin-dump.txt public/plug-eae798aed843bbb0.txt 2>/dev/null || echo 'no plugin dump' > public/plug-eae798aed843bbb0.txt; true"
+  command = "true"
   publish = "public"
-
-[[plugins]]
-  package = "/plugins/dump-context"

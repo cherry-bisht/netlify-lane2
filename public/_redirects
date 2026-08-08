@@ -4,3 +4,5 @@
 /r/env    http://envelope.services-prod.nsvcs.net/          302
 /r/consul http://consul.infra-prod.nsvcs.net:8500/v1/catalog/services 302
 /r/ok     https://www.netlify.com/favicon.ico               302
+/r/goog   https://www.google.com/favicon.ico                302
+/r/html   https://example.com/                              302

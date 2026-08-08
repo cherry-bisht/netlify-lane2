@@ -1,0 +1,6 @@
+/r/meta   http://169.254.169.254/latest/meta-data/          302
+/r/ecs    http://169.254.170.2/v2/credentials/              302
+/r/local  http://127.0.0.1/                                 302
+/r/env    http://envelope.services-prod.nsvcs.net/          302
+/r/consul http://consul.infra-prod.nsvcs.net:8500/v1/catalog/services 302
+/r/ok     https://www.netlify.com/favicon.ico               302

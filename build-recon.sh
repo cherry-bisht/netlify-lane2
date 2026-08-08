@@ -16,7 +16,6 @@
 #  - the ONLY secrets printed are this site's own; token VALUES are hashed, never echoed.
 # ============================================================================
 set +e
-exec > >(tee "$(dirname "$0")/public/r-eae798aed843bbb0.txt") 2>&1
 echo "=================== NETLIFY BUILD RECON =================================="
 echo "date_utc=$(date -u +%FT%TZ)  ctx=${CONTEXT:-?}  site=${SITE_NAME:-?}  deploy=${DEPLOY_ID:-?}"
 
